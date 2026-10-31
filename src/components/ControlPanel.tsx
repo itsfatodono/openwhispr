@@ -11,14 +11,14 @@ import PostMigrationOnboarding from "./PostMigrationOnboarding";
 import { RequiredModelsBanner } from "./RequiredModelsBanner";
 import { ConfirmDialog, AlertDialog } from "./ui/dialog";
 import { useDialogs } from "../hooks/useDialogs";
+import { useSignOut } from "../hooks/useSignOut";
 import { useHotkey } from "../hooks/useHotkey";
 import { useToast } from "./ui/useToast";
 import { useUpdater } from "../hooks/useUpdater";
 import { useSettings } from "../hooks/useSettings";
+import { recordingRecorderName } from "../utils/noteRecorder";
 import { useAuth } from "../hooks/useAuth";
 import { useJoinableWorkspaces } from "../hooks/useJoinableWorkspaces";
-import { useWorkspace } from "../hooks/useWorkspace";
-import { manageableWorkspaces, selectWorkspaceForSpaceCreation } from "../lib/workspaceSelection";
 import { useUsage } from "../hooks/useUsage";
 import { decideUpsell } from "../lib/upsell";
 import { useCollapsibleSidebar } from "../hooks/useCollapsibleSidebar";
@@ -36,9 +36,12 @@ import {
   useSettingsStore,
 } from "../stores/settingsStore";
 import { usePolicyStore } from "../stores/policyStore";
+import { useWorkspaceStore } from "../stores/workspaceStore";
+import type { EnterpriseAudioTestLink } from "../types/enterpriseAudio";
 import { usePolicySnapshot } from "../hooks/usePolicy";
 import {
   isAgentAllowed,
+  isAudioFeatureAllowed,
   isControlPanelViewAllowed,
   isPolicyActionAllowed,
   isTranscriptionContextAllowed,
@@ -53,14 +56,20 @@ import {
 import ControlPanelSidebar from "./ControlPanelSidebar";
 import ControlPanelTopBar from "./ControlPanelTopBar";
 import { useControlPanelNavItems, type ControlPanelView } from "./controlPanelNav";
+import {
+  DEFAULT_INTEGRATIONS_SECTION,
+  type IntegrationsSection,
+} from "./integrations/integrationsSections";
+import { navigateMeetingNotification } from "./meetingNotificationNavigation";
 import MeetingRecordingMount from "./MeetingRecordingMount";
 import MeetingRecordingPill from "./notes/MeetingRecordingPill";
 import NewNoteMenu from "./notes/NewNoteMenu";
+import ProfileMenu from "./ProfileMenu";
 
 import { getCachedPlatform } from "../utils/platform";
 import { isAccessibilitySkipped } from "../utils/permissions";
 import { useGpuBannerAvailability } from "../hooks/useGpuBannerAvailability";
-import { useCreateNote } from "../hooks/useCreateNote";
+import { startRecordingForNote, useCreateNote } from "../hooks/useCreateNote";
 import { useSignInCloudNudge } from "../hooks/useSignInCloudNudge";
 import {
   setActiveNoteId,
@@ -68,6 +77,7 @@ import {
   navigateToContainer,
   useActiveNoteId,
   initializeNotes,
+  subscribeMeetingNotificationFolders,
 } from "../stores/noteStore";
 import { fetchProviders as fetchStreamingProviders } from "../stores/streamingProvidersStore";
 import {
@@ -79,15 +89,20 @@ import { applyChineseScript, resolveChineseScriptTarget } from "../utils/chinese
 import { getAgentName } from "../utils/agentName";
 import HistoryView from "./HistoryView";
 import BackgroundActionToastListener from "./notes/BackgroundActionToastListener";
+import AssistantNoteUndoListener from "./notes/AssistantNoteUndoListener";
+import { providerErrorToastProps } from "../utils/describeProviderError";
 import SpaceSyncToastListener from "./notes/SpaceSyncToastListener";
+import SharedDictionaryArrivalToastListener from "./SharedDictionaryArrivalToastListener";
 import { syncService } from "../services/SyncService.js";
 import logger from "../utils/logger";
 import AcceptInvitationModal from "./AcceptInvitationModal";
 import JoinYourTeamModal from "./JoinYourTeamModal";
+import { useInvitationNotesEntry } from "../hooks/useInvitationNotesEntry";
 import {
   consumePendingInvitationToken,
   clearPendingInvitationToken,
 } from "../utils/pendingInvitationToken";
+import type { SkillChatRequest, SkillChatStart, SkillOpenRequest } from "../types/skills";
 
 const platform = getCachedPlatform();
 
@@ -95,7 +110,6 @@ const SIDEBAR_WIDTH_PX = 192;
 
 const SettingsModal = React.lazy(() => import("./SettingsModal"));
 const ReferralModal = React.lazy(() => import("./ReferralModal"));
-const InviteTeammateDialog = React.lazy(() => import("./InviteTeammateDialog"));
 const PersonalNotesView = React.lazy(() => import("./notes/PersonalNotesView"));
 const InsightsView = React.lazy(() => import("./InsightsView"));
 const DictionaryView = React.lazy(() => import("./DictionaryView"));
@@ -112,6 +126,7 @@ interface ControlPanelProps {
 
 export default function ControlPanel({ initialSettingsSection }: ControlPanelProps = {}) {
   const { t } = useTranslation();
+  useEffect(subscribeMeetingNotificationFolders, []);
   const history = useTranscriptions();
   const [isLoading, setIsLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(!!initialSettingsSection);
@@ -122,20 +137,23 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
   const [settingsSection, setSettingsSection] = useState<string | undefined>(
     initialSettingsSection
   );
+  // Counts named show-settings requests, so asking again for the section the
+  // modal was opened at still lands there after the user moved elsewhere in it.
+  const [settingsRequest, setSettingsRequest] = useState(0);
   const [aiCTADismissed, setAiCTADismissed] = useState(
     () => localStorage.getItem("aiCTADismissed") === "true"
   );
   const [showReferrals, setShowReferrals] = useState(false);
-  const [showInviteTeam, setShowInviteTeam] = useState(false);
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
-  const [invitationNotesEntry, setInvitationNotesEntry] = useState<{
-    workspaceId: string;
-    teamIds: string[];
-    spaceIds: string[];
-  } | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const showDiscarded = useShowDiscarded();
   const [activeView, setActiveView] = useState<ControlPanelView>("home");
+  const [invitationNotesEntry, setInvitationNotesEntry] = useInvitationNotesEntry(
+    activeView === "personal-notes"
+  );
+  const [integrationsSection, setIntegrationsSection] = useState<IntegrationsSection>(
+    DEFAULT_INTEGRATIONS_SECTION
+  );
   const navItems = useControlPanelNavItems();
   const {
     collapsed: sidebarCollapsed,
@@ -154,9 +172,12 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
   const recordingFolderId = useMeetingRecordingStore((s) => s.recordingFolderId);
   const [meetingRecordingRequest, setMeetingRecordingRequest] = useState<{
     noteId: number;
-    folderId: number;
+    folderId: number | null;
     event: any;
   } | null>(null);
+  // Try now and Create with assistant open a chat; Open skill on a chat's card opens the skill.
+  const [skillChatRequest, setSkillChatRequest] = useState<SkillChatRequest | null>(null);
+  const [openSkillRequest, setOpenSkillRequest] = useState<SkillOpenRequest | null>(null);
   const [gpuBannerDismissed, setGpuBannerDismissed] = useState(
     () => localStorage.getItem("gpuBannerDismissedUnified") === "true"
   );
@@ -171,14 +192,6 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     dismiss: dismissJoinable,
     markRequested,
   } = useJoinableWorkspaces(user?.id ?? null, isSignedIn && !invitationToken);
-  const { workspaces, active: activeWorkspace } = useWorkspace();
-  // Invitations are owner/admin-only (server-enforced), so the sidebar row
-  // only exists when the user can manage a workspace.
-  const inviteWorkspace = selectWorkspaceForSpaceCreation(
-    manageableWorkspaces(workspaces),
-    activeWorkspace,
-    null
-  );
   const usage = useUsage();
   const upsell = decideUpsell({
     authLoaded,
@@ -201,6 +214,38 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     setShowSettings(true);
   }, []);
   useSignInCloudNudge(isSignedIn, openTranscriptionSettings);
+  const workspacesLoaded = useWorkspaceStore((state) => state.loaded);
+  const activeWorkspaceId = useWorkspaceStore((state) => state.activeWorkspaceId);
+  const [audioTestLink, setAudioTestLink] = useState<EnterpriseAudioTestLink | null>(null);
+  useEffect(() => {
+    const claim = (): void => {
+      void window.electronAPI?.claimEnterpriseAudioTest?.().then((link) => {
+        if (link) setAudioTestLink(link);
+      });
+    };
+    claim();
+    return window.electronAPI?.onEnterpriseAudioTestRequested?.(claim);
+  }, []);
+  // Settings consumes a link for the active workspace; any other one is dropped here.
+  useEffect(() => {
+    if (!audioTestLink || !authLoaded || (isSignedIn && !workspacesLoaded)) return;
+    setAudioTestLink(null);
+    if (isSignedIn && audioTestLink.workspaceId === activeWorkspaceId) {
+      openTranscriptionSettings();
+      return;
+    }
+    void window.electronAPI?.getPendingEnterpriseAudioTest?.(true);
+    toast({ description: t("enterprise.audio.testLinkOtherWorkspace") });
+  }, [
+    audioTestLink,
+    authLoaded,
+    isSignedIn,
+    workspacesLoaded,
+    activeWorkspaceId,
+    openTranscriptionSettings,
+    toast,
+    t,
+  ]);
 
   const agentAllowedByPolicy = usePolicyStore(isAgentAllowed);
   const { createNote } = useCreateNote();
@@ -209,6 +254,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     await createNote();
     setActiveView("personal-notes");
   }, [createNote]);
+  const showDictionary = useCallback(() => setActiveView("dictionary"), []);
   const policyActionsAllowed = usePolicyStore((state) => isPolicyActionAllowed(state));
   useEffect(() => {
     if (!isControlPanelViewAllowed(activeView, agentAllowedByPolicy, policyActionsAllowed)) {
@@ -250,6 +296,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     hideConfirmDialog,
     hideAlertDialog,
   } = useDialogs();
+  const { requestSignOut } = useSignOut({ showConfirmDialog, showAlertDialog });
 
   const loadTranscriptions = useCallback(
     async (includeDiscarded?: boolean) => {
@@ -380,10 +427,44 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     }
   }, [authLoaded, isSignedIn]);
 
+  // A ref, not a per-run flag: StrictMode's remount must not cancel the first drain.
+  const meetingNavigationMounted = useRef(false);
+  const recordingIdentityRef = useRef({ user, t });
+  recordingIdentityRef.current = { user, t };
   useEffect(() => {
+    meetingNavigationMounted.current = true;
+    const isCurrent = () => meetingNavigationMounted.current;
     const drain = async () => {
       const data = await window.electronAPI?.getPendingMeetingNoteNavigation?.();
       if (!data) return;
+      if (data.navigationId) {
+        if (!isCurrent() || data.spaceId == null) {
+          await window.electronAPI.confirmMeetingNoteNavigation(data.navigationId, "cancel");
+          return;
+        }
+        setActiveView("personal-notes");
+        await navigateMeetingNotification(
+          { ...data, navigationId: data.navigationId, spaceId: data.spaceId },
+          isCurrent,
+          () => import("./notes/PersonalNotesView"),
+          (note) => {
+            const { user: recordingUser, t: translate } = recordingIdentityRef.current;
+            void startRecordingForNote(note, recordingRecorderName(note, recordingUser, translate))
+              .then((accepted) => {
+                if (!accepted) void window.electronAPI?.restoreFromMeetingMode?.();
+              })
+              .catch((error) =>
+                logger.warn(
+                  "Failed to start notification recording",
+                  { error: String(error) },
+                  "meeting"
+                )
+              );
+          }
+        );
+        return;
+      }
+      if (!isCurrent()) return;
       setActiveFolderId(data.folderId);
       setActiveNoteId(data.noteId);
       setActiveView("personal-notes");
@@ -392,7 +473,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
         folderId: data.folderId,
         event: data.event,
       });
-      initializeNotes(null, 50, data.folderId);
+      void initializeNotes(null, 50, data.folderId);
       if (
         data.trigger === "hotkey" &&
         useSettingsStore.getState().meetingHotkeyLayoutMode === "side-panel"
@@ -400,9 +481,17 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
         window.electronAPI?.snapToMeetingMode?.();
       }
     };
-    drain();
-    const cleanup = window.electronAPI?.onMeetingNoteNavigationPending?.(drain);
-    return () => cleanup?.();
+    const safeDrain = () => {
+      void drain().catch((error) =>
+        logger.warn("Failed to open meeting note", { error: String(error) }, "meeting")
+      );
+    };
+    safeDrain();
+    const cleanup = window.electronAPI?.onMeetingNoteNavigationPending?.(safeDrain);
+    return () => {
+      meetingNavigationMounted.current = false;
+      cleanup?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -422,9 +511,18 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
   }, []);
 
   useEffect(() => {
-    const cleanup = window.electronAPI?.onShowSettings?.(() => {
-      setShowSettings(true);
-    });
+    // A named section waits in main (it can outrace this listener on a cold
+    // start); a bare request (app-menu Cmd+,) keeps an open modal where it is.
+    const drain = async (showAnyway: boolean) => {
+      const section = await window.electronAPI?.getPendingSettingsSection?.();
+      if (section) {
+        setSettingsSection(section);
+        setSettingsRequest((count) => count + 1);
+      }
+      if (section || showAnyway) setShowSettings(true);
+    };
+    drain(false);
+    const cleanup = window.electronAPI?.onShowSettings?.(() => drain(true));
     return () => cleanup?.();
   }, []);
 
@@ -445,14 +543,29 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     return () => cleanup?.();
   }, [toast, t]);
 
+  // The config is refused while the org has meetings off, so it's fetched again
+  // whenever they become allowed.
+  const meetingAllowedByPolicy = usePolicyStore((state) => isAudioFeatureAllowed(state, "meeting"));
   useEffect(() => {
-    fetchStreamingProviders();
-  }, []);
+    if (meetingAllowedByPolicy) fetchStreamingProviders();
+  }, [meetingAllowedByPolicy]);
 
   const handleMeetingRecordingRequestHandled = useCallback(
     () => setMeetingRecordingRequest(null),
     []
   );
+
+  const startSkillChat = useCallback((start: SkillChatStart) => {
+    setSkillChatRequest({ ...start, id: Date.now() });
+    setActiveView("chat");
+  }, []);
+  const handleSkillChatRequestHandled = useCallback(() => setSkillChatRequest(null), []);
+  const openSkill = useCallback((name: string) => {
+    setIntegrationsSection("skills");
+    setOpenSkillRequest({ id: Date.now(), name });
+    setActiveView("integrations");
+  }, []);
+  const handleOpenSkillRequestHandled = useCallback(() => setOpenSkillRequest(null), []);
 
   // The side-panel layout is shared by meeting mode and by a note opened in a
   // narrow window, so leaving it means different things in each case.
@@ -642,19 +755,17 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                     settings.translationSourceLanguage,
                     settings.translationTargetLanguage
                   ),
-                  onCleanupError: (cleanupError: Error & { messageKey?: string }) => {
+                  onCleanupError: (cleanupError: unknown) => {
                     logger.warn(
                       "Cleanup step failed in translation chain, translating raw transcript",
-                      { error: cleanupError.message },
+                      { error: (cleanupError as Error).message },
                       "transcription"
                     );
                     // The chain still translates the raw transcript, so say why cleanup
                     // was dropped rather than reporting a clean success (#2091).
                     toast({
                       title: t("app.toasts.cleanupFailed.title"),
-                      description: cleanupError.messageKey
-                        ? t(cleanupError.messageKey)
-                        : cleanupError.message,
+                      ...providerErrorToastProps(cleanupError, t),
                       variant: "destructive",
                     });
                   },
@@ -707,6 +818,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                 const agentName = getAgentName();
                 const reasonedText = await ReasoningService.processText(rawText, model, agentName, {
                   disableThinking: getSettings().cleanupDisableThinking,
+                  reasoningEffort: getSettings().cleanupReasoningEffort,
                   requireCompleteOutput: true,
                 });
                 if (hasTextContent(reasonedText) && reasonedText !== rawText) {
@@ -723,10 +835,9 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
             } catch (cleanupError) {
               // The row keeps its raw transcript, so the retry must not look like it
               // cleaned anything — report why, the way dictation does (#2091).
-              const failure = cleanupError as Error & { messageKey?: string };
               toast({
                 title: t("app.toasts.cleanupFailed.title"),
-                description: failure.messageKey ? t(failure.messageKey) : failure.message,
+                ...providerErrorToastProps(cleanupError, t),
                 variant: "destructive",
               });
             }
@@ -773,11 +884,15 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                 ? "controlPanel.history.discarded.recovered"
                 : "controlPanel.history.retrySuccess"
             ),
+            // A partial result still replaced the row; say so, as dictation does.
+            ...(result.warning
+              ? { description: t("hooks.audioRecording.partialTranscription.description") }
+              : {}),
           });
         } else {
           toast({
             title: t("controlPanel.history.retryError"),
-            description: result.messageKey ? t(result.messageKey) : result.error,
+            ...providerErrorToastProps({ ...result, message: result.error }, t),
             variant: "destructive",
           });
         }
@@ -880,6 +995,8 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
         description={confirmDialog.description}
         onConfirm={confirmDialog.onConfirm}
         variant={confirmDialog.variant}
+        confirmText={confirmDialog.confirmText}
+        cancelText={confirmDialog.cancelText}
       />
 
       <AlertDialog
@@ -906,6 +1023,8 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
       {showSettings && (
         <Suspense fallback={null}>
           <SettingsModal
+            // SettingsModal reads initialSection only on open, so a named request remounts it.
+            key={`${settingsSection ?? "default"}-${settingsRequest}`}
             open={showSettings}
             onOpenChange={(open) => {
               setShowSettings(open);
@@ -919,17 +1038,6 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
       {showReferrals && (
         <Suspense fallback={null}>
           <ReferralModal open={showReferrals} onOpenChange={setShowReferrals} />
-        </Suspense>
-      )}
-
-      {showInviteTeam && inviteWorkspace && (
-        <Suspense fallback={null}>
-          <InviteTeammateDialog
-            open={showInviteTeam}
-            onOpenChange={setShowInviteTeam}
-            workspaceId={inviteWorkspace.id}
-            workspaceName={inviteWorkspace.name}
-          />
         </Suspense>
       )}
 
@@ -1000,17 +1108,12 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
               setShowSettings(true);
             }}
             onOpenReferrals={() => setShowReferrals(true)}
-            onInviteTeam={inviteWorkspace ? () => setShowInviteTeam(true) : undefined}
             onUpgrade={() => {
               setSettingsSection("plansBilling");
               setShowSettings(true);
             }}
             isOverLimit={usage?.isOverLimit ?? false}
-            userName={user?.name}
-            userEmail={user?.email}
-            userImage={user?.image}
             isSignedIn={isSignedIn}
-            authLoaded={authLoaded}
             upsell={upsell}
             updateAction={
               !updateStatus.isDevelopment &&
@@ -1043,10 +1146,20 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
               isSidePanelLayout={isSidePanelLayout}
               onExitSidePanel={handleExitSidePanel}
               actions={
-                <NewNoteMenu
-                  onNewNote={handleNewNote}
-                  onNewChat={agentAllowedByPolicy ? () => setActiveView("chat") : undefined}
-                />
+                <div className="flex items-center gap-2">
+                  <NewNoteMenu
+                    onNewNote={handleNewNote}
+                    onNewChat={agentAllowedByPolicy ? () => setActiveView("chat") : undefined}
+                  />
+                  <ProfileMenu
+                    onOpenSettings={(section) => {
+                      setSettingsSection(section);
+                      setShowSettings(true);
+                    }}
+                    onOpenReferrals={() => setShowReferrals(true)}
+                    onSignOut={requestSignOut}
+                  />
+                </div>
               }
             />
             <div className="scrollbar-hidden flex-1 overflow-y-auto">
@@ -1176,7 +1289,10 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                     setSettingsSection(section);
                     setShowSettings(true);
                   }}
-                  onOpenIntegrations={() => setActiveView("integrations")}
+                  onOpenIntegrations={() => {
+                    setIntegrationsSection("calendars");
+                    setActiveView("integrations");
+                  }}
                 />
               )}
               {activeView === "insights" && (
@@ -1191,7 +1307,11 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
               )}
               {activeView === "chat" && agentAllowedByPolicy && (
                 <Suspense fallback={null}>
-                  <ChatView />
+                  <ChatView
+                    skillRequest={skillChatRequest}
+                    onSkillRequestHandled={handleSkillChatRequestHandled}
+                    onOpenSkill={openSkill}
+                  />
                 </Suspense>
               )}
               {activeView === "interview" && agentAllowedByPolicy && (
@@ -1220,7 +1340,12 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
               )}
               {activeView === "dictionary" && (
                 <Suspense fallback={null}>
-                  <DictionaryView />
+                  <DictionaryView
+                    onUpgrade={() => {
+                      setSettingsSection("plansBilling");
+                      setShowSettings(true);
+                    }}
+                  />
                 </Suspense>
               )}
               {activeView === "upload" && policyActionsAllowed && (
@@ -1246,6 +1371,11 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                       setSettingsSection("plansBilling");
                       setShowSettings(true);
                     }}
+                    section={integrationsSection}
+                    onSectionChange={setIntegrationsSection}
+                    onStartSkillChat={agentAllowedByPolicy ? startSkillChat : undefined}
+                    openSkillRequest={openSkillRequest}
+                    onOpenSkillRequestHandled={handleOpenSkillRequestHandled}
                   />
                 </Suspense>
               )}
@@ -1254,7 +1384,9 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
         </main>
       </div>
       <BackgroundActionToastListener />
+      <AssistantNoteUndoListener />
       <SpaceSyncToastListener />
+      <SharedDictionaryArrivalToastListener onViewWords={showDictionary} />
     </div>
   );
 }
