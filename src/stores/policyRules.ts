@@ -203,6 +203,11 @@ export function isWebSearchAllowed(state: PolicyDecisionSnapshot): boolean {
   return managedPolicyDecision(state, (policy) => policy.features.webSearchEnabled);
 }
 
+/** Whether a resolved org policy turned web search off (not one still loading). */
+export function isWebSearchBlockedByOrg(state: PolicyDecisionSnapshot): boolean {
+  return state.status === "managed" && isPolicyActionAllowed(state) && !isWebSearchAllowed(state);
+}
+
 /**
  * Whether the voice agent may attach screen context. Servers that predate the
  * field send none; absent means allowed.
@@ -414,7 +419,35 @@ export function isTranscriptionContextAllowed(
   settings: SettingsState,
   context: TranscriptionPolicyContext
 ): boolean {
-  return isTranscriptionSelectionAllowed(state, getTranscriptionSelection(settings, context));
+  return (
+    isAudioFeatureAllowed(state, context) &&
+    isTranscriptionSelectionAllowed(state, getTranscriptionSelection(settings, context))
+  );
+}
+
+export function isAudioFeatureAllowed(
+  state: PolicyDecisionSnapshot,
+  context: TranscriptionPolicyContext
+): boolean {
+  return managedPolicyDecision(state, (policy) =>
+    context === "meeting"
+      ? policy.features.meetingRecordingEnabled !== false
+      : context === "upload"
+        ? policy.features.audioUploadEnabled !== false
+        : true
+  );
+}
+
+export type MeetingRecordingRefusal = "unresolved" | "disabled" | "restricted";
+
+/**
+ * Why policy refuses a meeting recording: no policy resolved yet, the org's
+ * meeting recording switch, or another restriction (e.g. a minimum app version).
+ */
+export function meetingRecordingRefusal(state: PolicyDecisionSnapshot): MeetingRecordingRefusal {
+  const policy = managedPolicy(state);
+  if (!policy) return "unresolved";
+  return policy.features.meetingRecordingEnabled === false ? "disabled" : "restricted";
 }
 
 /** Whether a note share visibility is allowed under the org's external-sharing mode. */

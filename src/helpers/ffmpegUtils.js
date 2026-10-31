@@ -205,7 +205,7 @@ function convertToWav(inputPath, outputPath, options = {}) {
 // Mono 16 kHz MP3 with any video stream dropped: the same shape as the cloud
 // chunks, accepted by every provider, and small enough for their upload caps.
 function convertToMp3(inputPath, outputPath, options = {}) {
-  const { audioBitrate = "64k", signal } = options;
+  const { audioBitrate = "64k", minimumDurationSeconds, signal } = options;
 
   debugLogger.debug("Re-encoding audio to MP3 with FFmpeg", {
     input: inputPath,
@@ -218,6 +218,7 @@ function convertToMp3(inputPath, outputPath, options = {}) {
       "-i",
       inputPath,
       "-vn",
+      ...(minimumDurationSeconds ? ["-af", `apad=whole_dur=${minimumDurationSeconds}`] : []),
       "-c:a",
       "libmp3lame",
       "-b:a",
@@ -277,7 +278,8 @@ function parseWavFormat(wavBuffer) {
       };
     }
 
-    offset += 8 + chunkSize;
+    // RIFF chunks are word-aligned; chunkSize excludes the padding byte.
+    offset += 8 + chunkSize + (chunkSize % 2);
   }
 
   return null;
@@ -317,7 +319,8 @@ function wavToFloat32Samples(wavBuffer) {
       break;
     }
 
-    offset += 8 + chunkSize;
+    // RIFF chunks are word-aligned; chunkSize excludes the padding byte.
+    offset += 8 + chunkSize + (chunkSize % 2);
   }
 
   if (dataOffset < 0) {

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import App from "./App.jsx";
 import AgentDictationPillOverlay from "./components/dictation/AgentDictationPillOverlay.tsx";
 import MeetingNotificationOverlay from "./components/MeetingNotificationOverlay.tsx";
+import { PermissionGuideOverlay } from "./components/onboarding/PermissionGuideOverlay";
 import ReauthenticationScreen from "./components/ReauthenticationScreen.tsx";
 import BackgroundModelDownloadTray from "./components/onboarding/BackgroundModelDownloadTray.tsx";
 import { LEGACY_ONBOARDING_STEP_KEY, ONBOARDING_SESSION_KEY } from "./components/onboarding/flow";
@@ -36,6 +37,7 @@ export default function AppRouter() {
       </Suspense>
     );
   }
+  if (params.includes("permission-guide=true")) return <PermissionGuideOverlay />;
 
   if (params.includes("meeting-notification=true")) {
     return <MeetingNotificationOverlay />;

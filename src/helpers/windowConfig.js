@@ -264,8 +264,8 @@ const CONTROL_PANEL_CONFIG = {
 };
 
 const NOTIFICATION_WINDOW_CONFIG = {
-  width: 392,
-  height: 92,
+  width: 416,
+  height: 84,
   frame: false,
   transparent: true,
   alwaysOnTop: true,
@@ -315,6 +315,18 @@ const INTERVIEW_WINDOW_CONFIG = {
   acceptFirstMouse: true,
   type: resolveOverlayWindowType({ role: "interview", platform: process.platform, linuxSession }),
 };
+function fitMeetingNotificationWindow(contentHeight, workArea) {
+  const width = Math.max(1, Math.min(NOTIFICATION_WINDOW_CONFIG.width, workArea.width));
+  const height = Math.max(1, Math.min(Math.ceil(contentHeight), 512, workArea.height));
+  const marginX = Math.min(16, Math.max(0, workArea.width - width));
+  const marginY = Math.min(16, Math.max(0, workArea.height - height));
+  return {
+    x: workArea.x + workArea.width - width - marginX,
+    y: workArea.y + marginY,
+    width,
+    height,
+  };
+}
 
 class WindowPositionUtil {
   static getMainWindowPosition(display, customSize = null, position = "bottom-right") {
@@ -357,18 +369,10 @@ class WindowPositionUtil {
   }
 
   static getNotificationPosition(display) {
-    const { width, height } = NOTIFICATION_WINDOW_CONFIG;
-    const MARGIN = 16;
-    const workArea = display.workArea || display.bounds;
-    // Same negative-origin trap as getMainWindowPosition: clamp to the display,
-    // not to zero, or a monitor above the primary one puts the prompt nowhere.
-    const bounds = {
-      x: workArea.x + workArea.width - width - MARGIN,
-      y: workArea.y + MARGIN,
-      width,
-      height,
-    };
-    return { ...WindowPositionUtil.clampToWorkArea(bounds, display), width, height };
+    return fitMeetingNotificationWindow(
+      NOTIFICATION_WINDOW_CONFIG.height,
+      display.workArea || display.bounds
+    );
   }
 
   // `level` only applies on macOS; Windows and Linux already use the strongest
@@ -408,6 +412,7 @@ class WindowPositionUtil {
 }
 
 module.exports = {
+  fitMeetingNotificationWindow,
   MAIN_WINDOW_CONFIG,
   CONTROL_PANEL_CONFIG,
   INTERVIEW_WINDOW_CONFIG,
